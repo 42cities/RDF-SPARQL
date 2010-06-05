@@ -14,7 +14,7 @@ end
 desc 'Generate documentation.'
 YARD::Rake::YardocTask.new(:doc) do |t|
   t.files   = ['lib/**/*.rb']
-  t.options = ['--title=RDFMapper']
+  t.options = ['--title=RDF-SPARQL']
 end
 
 desc 'Build a gem package'
