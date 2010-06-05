@@ -1,26 +1,17 @@
 module RDF
   module SPARQL
     module Common
-
+      
+      include RDF::Enumerable
+      
       ##
-      # Yields each statement of SPARQL query
+      # Yields each statement of SPARQL query.
       # @yield  [statement]
       # @yieldparam [Statement]
       # @return [Reader]
       ##
-      def each_statement(&block)
+      def each(&block)
         @graph.each_statement { |statement| block.call(statement) }
-        self
-      end
-
-      ##
-      # Yields each triple of SPARQL query
-      # @yield  [triple]
-      # @yieldparam [Array(Value)]
-      # @return [Reader]
-      ##
-      def each_triple(&block)
-        @graph.each_triple { |*triple| block.call(*triple) }
         self
       end
 
@@ -47,46 +38,32 @@ module RDF
       end
 
       ##
-      # [-]
+      # Returns all requested variables.
+      # @return [Array<RDF::Query::Variable>]
       ##
       def targets
-        @targets
+        @targets.dup
       end
       
       ##
-      # [-]
-      ##
-      def statements
-        @graph.statements
-      end
-
-      ##
-      # [-]
-      ##
-      def triples
-        @graph.triples
-      end
-
-      ##
-      # [-]
+      # Returns all variables.
+      # @return [Array<RDF::Query::Variable>]
       ##
       def variables
-        Hash[@graph.map { |pattern|
-          pattern.variables.values
-        }.flatten.uniq.map { |variable|
-          [variable.name, variable]
-        }]
+        @graph.statements.map(&:to_a).flatten.select(&:variable?)
       end
 
       ##
-      # [-]
+      # Returns query type (:select, :describe, :ask or :construct).
+      # @return [Symbol]
+      # @return [nil] if undefined
       ##
       def type
         @type || @options[:type]
       end
       
       ##
-      # Check whether `distinct` flag was specified
+      # Returns true if `distinct` flag is specified.
       # @return [Boolean]
       ##
       def distinct?
@@ -94,7 +71,7 @@ module RDF
       end
 
       ##
-      # Check whether `reduced` flag was specified
+      # Returns true if `reduced` flag is specified,
       # @return [Boolean]
       ##
       def reduced?
