@@ -4,9 +4,9 @@ module RDF::SPARQL
     include RDF::SPARQL::Common
     format RDF::SPARQL::Format
     
-    RE_PREFIX     = /^PREFIX\s+([a-z]+):\s+<([^>]+)>\s?/
-    RE_SELECT     = /^SELECT\s+/
-    RE_DESCRIBE   = /^DESCRIBE\s+/
+    RE_PREFIX     = /^PREFIX\s([a-z]+):\s<([^>]+)>\s?/
+    RE_SELECT     = /^SELECT\s/
+    RE_DESCRIBE   = /^DESCRIBE\s/
     RE_FLAG       = /^(DISTINCT|REDUCED|)\s?/
     RE_WHERE      = /^(WHERE|)\s?\{/
     RE_TRIPLE_END = /^([\.|,|;])\s?/
