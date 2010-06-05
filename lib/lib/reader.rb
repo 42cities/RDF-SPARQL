@@ -4,6 +4,25 @@ module RDF::SPARQL
     include RDF::SPARQL::Common
     format RDF::SPARQL::Format
     
+    RE_PREFIX     = /^PREFIX\s+([a-z]+):\s+<([^>]+)>\s?/
+    RE_SELECT     = /^SELECT\s+/
+    RE_DESCRIBE   = /^DESCRIBE\s+/
+    RE_FLAG       = /^(DISTINCT|REDUCED|)\s?/
+    RE_WHERE      = /^(WHERE|)\s?\{/
+    RE_TRIPLE_END = /^([\.|,|;])\s?/
+    RE_FILTER     = /^FILTER\s*\(\s?/
+    RE_FILTER_MOD = /^(\|{2}|&{2})+\s?/
+    RE_FILTER_END = /^\)\s?/
+    RE_COMPARISON = /^([!=|>|<|=])\s?/
+    RE_TYPE_A     = /^(a)\s?/
+    RE_FULL_URI   = /^<([^>]+)>\s?/
+    RE_NS_URI     = /^([a-zA-Z]+):([a-zA-Z]+)\s?/
+    RE_VARIABLE   = /^\?([A-Za-z0-9_]+)\s?/
+    RE_LITERAL    = /^"([^"]*)"\s?/
+    RE_LANGUAGE   = /^@([a-z]+[\-a-z0-9]*)\s?/
+    RE_DATATYPE   = /^(\^\^)\s?/
+    RE_NUMERIC    = /^([\d\.]+)\s?/
+    
     ##
     # @param  [IO, File, String] input
     # @yield  [reader]
@@ -11,104 +30,135 @@ module RDF::SPARQL
     ##
     def initialize(input = $stdin, options = {}, &block)
       @line = input.respond_to?(:read) ? input.read : input
+      @line.gsub!(/[\r\n]/, ' ').squeeze!(' ')
       @graph = RDF::Graph.new
       @type = nil
       @prefixes = {}
       @variables = {}
       @targets = []
       @options = {}
-      read_query
+      read_all
       block.call(self) if block_given?
     end
     
     private
     
-      
     ##
-    # Reads prologue of SPARQL query (prefixes and targets)
+    # Main parser loop: reads prologue, conditions and epilogue.
+    # @return [True]
+    ##
+    def read_all #nodoc
+      read_prologue && read_where && read_epilogue
+    end
+    
+    ##
+    # Attempts to read prologue.
+    # @return [True]
     ##
     def read_prologue
-      while (read_prefix || read_target); end
+      while (read_prefix || read_query); end
+      true
     end
     
     ##
-    # Reads next `PREFIX`
+    # Attempts to read prefixes.
+    # @return [nil] if not found
+    # @return [String] if found
     ##
     def read_prefix
-      full, ns, uri = match(/\s*PREFIX\s+([a-z]+):\s+<([^>]+)>/)
-      full.nil? ? nil : add_prefix(ns, uri)
+      ns, uri = match(RE_PREFIX)
+      ns.nil? ? nil : add_prefix(ns, uri)
     end
     
     ##
-    # Reads targets of SPARQL query
+    # Attempts to read query.
+    # @return [nil] if not found
+    # @return [Symbol] if found
     ##
-    def read_target
-      read_select_target || read_describe_target || read_construct_target || read_ask_target
+    def read_query
+      read_select_query || read_describe_query || read_construct_query || read_ask_query
     end
     
     ##
-    # Reads targets of a `SELECT` query
+    # Attempts to read requested variables.
+    # @return [True]
     ##
-    def read_select_target
-      full, flag = match(/\s*SELECT\s+(DISTINCT|REDUCED|)\s*/)
-      return nil if full.nil?
-      case flag
+    def read_query_variables
+      while
+        variable = read_variable
+        break if variable.nil?
+        add_target(variable)
+      end
+      true
+    end
+    
+    ##
+    # Attempts to read a `SELECT` query.
+    # @return [nil] if not found
+    # @return [Symbol] if found
+    ##
+    def read_select_query
+      unless match(RE_SELECT)
+        return nil
+      end
+      case match(RE_FLAG)
         when 'DISTINCT' then @options[:distinct] = true
         when 'REDUCED'  then @options[:reduced] = true
       end
+      read_query_variables
       @type = :select
-      while 
-        var = read_variable
-        var.nil? ? break : add_target(var)
-      end
     end
     
     ##
-    # Reads targets of a `DESCRIBE` query
+    # Attempts to read a `DESCRIBE` query.
+    # @return [nil] if not found
+    # @return [Symbol] if found
     ##
-    def read_describe_target
-      return nil if match(/\s*DESCRIBE\s+/).nil?
+    def read_describe_query
+      unless match(RE_DESCRIBE)
+        return nil
+      end
+      read_query_variables
       @type = :describe
-      while
-        var = (read_variable || read_uri)
-        var.nil? ? break : add_target(var)
-      end
     end
     
     ##
-    # Reads targets of a `CONSTRUCT` query
+    # Attempts to read a `CONSTRUCT` query.
+    # @return [nil] if not found
+    # @return [Symbol] if found
     ##
-    def read_construct_target
+    def read_construct_query
+      # TODO
       return nil
       @type = :construct
     end
     
     ##
-    # Reads targets of an `ASK` query
+    # Attempts to read an `ASK` query.
+    # @return [nil] if not found
+    # @return [Symbol] if found
     ##
-    def read_ask_target
+    def read_ask_query
+      # TODO
       return nil
       @type = :ask
     end
     
     ##
-    # Reads all triples & filters of a query
+    # Reads all triples & filters.
+    # @return [nil] if not found
+    # @return [True] if found
     ##
     def read_where
-      full = match(/(WHERE|)\s*\{/)
-      return nil if full.nil?
+      return nil unless match(RE_WHERE)
       while (read_triple || read_filter); end
+      true
     end
     
     ##
-    # Main parser loop: reads prologue, conditions and epilogue
-    ##
-    def read_query #nodoc
-      while (read_prologue || read_where || read_epilogue); end
-    end
-    
-    ##
-    # Reads a triple
+    # Attempts to read a triple.
+    # @return [nil] if not found
+    # @return [RDF::Query::Pattern] if found
     ##
     def read_triple
       shortcut =    read_triple_ending
@@ -120,24 +170,29 @@ module RDF::SPARQL
     end
     
     ##
-    # Finds any formatting shortcuts (a comma, a semicolon)
+    # Returns triple's last character.
+    # @return [String]
     ##
     def read_triple_ending
-      full, symbol = match(/\s*([\.|,|;])\s*/)
-      full.nil? ? '.' : (symbol.empty? ? '.' : symbol)
-    end
-
-    ##
-    # Reads a filter
-    ##
-    def read_filter
-      full = match(/FILTER\s*\(\s*/)
-      return nil if full.nil?
-      while (read_filter_condition || read_filter_ending); end
+      symbol = match(RE_TRIPLE_END)
+      symbol.nil? ? '.' : (symbol.empty? ? '.' : symbol)
     end
     
     ##
-    # Reads next condition specified in a filter
+    # Attempts to read a filter.
+    # @return [nil] if not found
+    # @return [True] if found
+    ##
+    def read_filter
+      return nil unless match(RE_FILTER)
+      while (read_filter_condition || read_filter_ending); end
+      true
+    end
+    
+    ##
+    # Attempts to read next condition in a filter.
+    # @return [nil] if not found
+    # @return [True] if found
     ##
     def read_filter_condition
       modifier =    read_filter_modifier
@@ -146,95 +201,106 @@ module RDF::SPARQL
       value =       (read_variable || read_literal || read_numeric)
       return nil if variable.nil?
       variable.bind(value, comparison, (modifier != "||"))
+      true
     end
     
     ##
-    # Returns filter modifier (|| or &&)
+    # Attempts to read `FILTER` modifier (|| or &&).
+    # @return [nil] if not found
+    # @return [String] if found
     ##
     def read_filter_modifier
-      full, symbols = match(/\s*(\|{2}|&{2})+\s*/)
-      full.nil? ? nil : symbols
+      match(RE_FILTER_MOD)
     end
     
     ##
-    # Moves pointer to the end of `FILTER` expression
+    # Attempts to read then end of `FILTER` expression.
+    # @return [nil] if not found
+    # @return [String] if found
     ##
     def read_filter_ending
-      match(/\s*\)\s*/)
+      match(RE_FILTER_END)
     end
     
     ##
-    # Returns comparison operator (> < != =)
+    # Attempts to read comparison operator (> < != =).
+    # @return [nil] if not found
+    # @return [String] if found
     ##
     def read_comparison_operator
-      full, symbol = match(/\s*([!=|>|<|=])\s*/)
-      full.nil? ? nil : symbol
+      match(RE_COMPARISON)
     end
     
     ##
-    # Reads query epilogue (order, limit, group)
+    # Attempts to read query epilogue (order, limit, group).
+    # @return [True]
     ##
     def read_epilogue
-      nil
+      # TODO
+      true
     end
     
     ##
-    # Reads next `PREFIX`
-    ##
-    def read_prefix
-      full, ns, uri = match(/\s*PREFIX\s+([a-z]+):\s+<([^>]+)>/)
-      full.nil? ? nil : add_prefix(ns, uri)
-    end
-
-    ##
-    # Reads an URI (as a full URI, namespaced or RDF type shortcut)
+    # Attempts to read an URI (full, namespaced or RDF type shortcut).
+    # @return [nil] if not found
+    # @return [RDF::URI] if found
     ##
     def read_uri
       read_full_uri || read_type_shortcut || read_ns_uri
     end
     
     ##
-    # Returns RDF.type if URI is an RDF type shortcut
+    # Attempts to read an RDF type shortcut.
+    # @return [nil] if not found
+    # @return [RDF::URI] if found
     ##
     def read_type_shortcut
-      full, symbol = match(/\s*(a)\s*/)
-      full.nil? ? nil : (symbol == 'a' ? RDF.type : nil)
+      symbol = match(RE_TYPE_A)
+      symbol.nil? ? nil : (symbol == 'a' ? RDF.type : nil)
     end
     
     ##
-    # Returns URI if this is a non-abridged URI (no shortcuts or namespaces)
+    # Attempts to read a non-abridged URI (no shortcuts or namespaces).
+    # @return [nil] if not found
+    # @return [RDF::URI] if found
     ##
     def read_full_uri
-      full, uri = match(/^<([^>]+)>/)
-      full.nil? ? nil : RDF::URI.new(uri)
+      uri = match(RE_FULL_URI)
+      uri.nil? ? nil : RDF::URI.new(uri)
     end
     
     ##
-    # Returns URI that was namespaced in prefixes
+    # Attempts to read a namespaced URI.
+    # @return [nil] if not found
+    # @return [RDF::URI] if found
     ##
     def read_ns_uri
-      full, ns, uri = match(/([a-zA-Z]+):([a-zA-Z]+)/)
-      full.nil? ? nil : RDF::URI.new(@prefixes[ns].to_s + uri)
+      ns, uri = match(RE_NS_URI)
+      ns.nil? ? nil : RDF::URI.new(@prefixes[ns].to_s + uri)
     end
     
     ##
-    # Reads a variable
+    # Attempts to reads a variable.
+    # @return [nil] if not found
+    # @return [RDF::Query::Variable] if found
     ##
     def read_variable
-      full, name = match(/\?([A-Za-z0-9_]+)\s*/)
-      full.nil? ? nil : add_variable(name)
+      name = match(RE_VARIABLE)
+      name.nil? ? nil : add_variable(name)
     end
     
     ##
-    # Reads a literal value
+    # Attempts to read a literal value.
+    # @return [nil] if not found
+    # @return [RDF::Literal] if found
     ##
     def read_literal
-      full, string = match(/\s*"([^"]*)"/)
-      return nil if full.nil?
-      full, language = match(/@([a-z]+[\-a-z0-9]*)/)
+      string = match(RE_LITERAL)
+      return nil if string.nil?
+      language = match(RE_LANGUAGE)
       if language
         RDF::Literal.new(string, :language => language)
-      elsif match(/(\^\^)/)
+      elsif match(RE_DATATYPE)
         RDF::Literal.new(string, :datatype => read_uri)
       else
         RDF::Literal.new(string)
@@ -242,48 +308,68 @@ module RDF::SPARQL
     end
     
     ##
-    # Reads a numeric value
+    # Attempts to read a numeric value.
+    # @return [nil] if not found
+    # @return [Float] if found
     ##
     def read_numeric
-      full = match(/\d+/)
-      full.nil? ? nil : full.first
+      value = match(RE_NUMERIC)
+      value.nil? ? nil : value.to_f
     end
-
+    
     ##
-    # Registers a triple
+    # Adds a triple.
+    # @param [RDF::URI, RDF::Query::Variable] subject
+    # @param [RDF::URI, RDF::Query::Variable] predicate
+    # @param [RDF::URI, RDF::Query::Variable, RDF::Literal] object
+    # @return [RDF::Query::Pattern]
     ##
     def add_triple(subject, predicate, object)
       @graph << RDF::Query::Pattern.new(subject, predicate, object)
     end
 
     ##
-    # Registers a prefix
+    # Adds a prefix.
+    # @param [String] namespace
+    # @param [String] uri
+    # @return [String]
     ##
-    def add_prefix(ns, uri)
-      @prefixes[ns] = uri
+    def add_prefix(namespace, uri)
+      @prefixes[namespace] = uri
     end
     
     ##
-    # Registers a variable
+    # Adds a variable.
+    # @param [String] name
+    # @return [RDF::Query::Variable]
     ##
     def add_variable(name)
       @variables[name] ||= RDF::Query::Variable.new(name)
     end
 
     ##
-    # Registers a target
+    # Adds a target.
+    # @param [RDF::Query::Variable] variable
+    # @return [Array<RDF::Query::Variable>]
     ##
-    def add_target(var)
-      @targets << var
+    def add_target(variable)
+      @targets << variable
     end
     
     ##
-    # Returns a match array
+    # Returns a match array.
+    # @param [Regexp] pattern
+    # @return [nil, String, Array<String>]
     ##
     def match(pattern)
-      if (@line =~ pattern) == 0
+      if (@line =~ pattern)
         @line = $'.lstrip
-        Regexp.last_match.to_a
+        result = Regexp.last_match.to_a[1,10]
+        case result.length
+          when 0 then true
+          when 1 then result.first
+          else result
+        end
       end
     end
     
